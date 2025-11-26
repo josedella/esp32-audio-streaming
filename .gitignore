@@ -1,0 +1,16 @@
+# ESP-IDF Build folder (Huge, do not commit)
+build/
+
+# Editor settings (Optional, but recommended to ignore)
+.vscode/
+.idea/
+
+# Old configuration backups
+sdkconfig.old
+
+# Python cache
+__pycache__/
+
+# IDF Component manager
+managed_components/
+dependencies.lock
