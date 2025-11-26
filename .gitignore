@@ -14,3 +14,21 @@ __pycache__/
 # IDF Component manager
 managed_components/
 dependencies.lock
+
+# --- Python Specific ---
+# Virtual Environments (Crucial!)
+venv/
+.venv/
+env/
+
+# Compiled Python files
+*.pyc
+
+# --- OS Specific (Since you are on Windows) ---
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+# --- VS Code History ---
+.history/
