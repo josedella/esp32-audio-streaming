@@ -14,11 +14,11 @@ static const char *TAG = "APP";
 // GPIO assignments
 // ------------------------------------------------------
 
-// LED and button
+// LED and button (Moved Button to GPIO 15 for better layout)
 #define LED_PIN        GPIO_NUM_4
-#define BUTTON_PIN     GPIO_NUM_42
+#define BUTTON_PIN     GPIO_NUM_15 
 
-// INMP441 I2S microphone
+// INMP441 I2S microphones (Stereo)
 #define I2S_BCLK_PIN   GPIO_NUM_47
 #define I2S_WS_PIN     GPIO_NUM_21
 #define I2S_DATA_PIN   GPIO_NUM_48
@@ -44,11 +44,12 @@ static const char *TAG = "APP";
 
 // Audio Settings
 #define SAMPLE_RATE       16000
-#define BUFFER_SAMPLES    64
+#define BUFFER_SAMPLES    256   // Increased from 64 to reduce network jitter!
 
 // Globals
 static volatile bool mic_enabled = false;
-static int32_t mic_buffer[BUFFER_SAMPLES];
+// Buffer size needs to handle stereo (2 channels * 32 bits)
+static int32_t mic_buffer[BUFFER_SAMPLES * 2]; 
 static spi_device_handle_t w5500;
 
 // ------------------------------------------------------
@@ -60,7 +61,7 @@ void w5500_write_reg(uint16_t addr, uint8_t control, uint8_t data)
     uint8_t tx[4];
     tx[0] = (addr >> 8) & 0xFF;
     tx[1] = addr & 0xFF;
-    tx[2] = control;      // Write, 1 byte
+    tx[2] = control;      
     tx[3] = data;
 
     spi_transaction_t t = {
@@ -72,12 +73,11 @@ void w5500_write_reg(uint16_t addr, uint8_t control, uint8_t data)
 
 uint8_t w5500_read_reg(uint16_t addr, uint8_t control)
 {
-    // Send 3 bytes header + 1 dummy byte to clock in data
     uint8_t tx[4] = {
         (addr >> 8) & 0xFF, 
         addr & 0xFF,        
         control,            
-        0x00                // Dummy Byte
+        0x00                
     };
     uint8_t rx[4] = {0};    
 
@@ -88,12 +88,10 @@ uint8_t w5500_read_reg(uint16_t addr, uint8_t control)
     };
     
     spi_device_transmit(w5500, &t);
-
-    // The W5500 returns data during the 4th byte (index 3)
     return rx[3];
 }
 
-// Helper to read 16-bit register (needed for pointers)
+// Helper to read 16-bit register 
 uint16_t w5500_read_reg16(uint16_t addr, uint8_t control) {
     uint16_t res = w5500_read_reg(addr, control) << 8;
     res |= w5500_read_reg(addr + 1, control);
@@ -134,7 +132,7 @@ static void w5500_udp_open(void)
 
 // Send raw UDP data packet (Socket 0)
 void w5500_send_udp_packet(uint8_t *data, size_t len) {
-    // 1. Get current Write Pointer (Sn_TX_WR is at offset 0x0024)
+    // 1. Get current Write Pointer
     uint16_t ptr = w5500_read_reg16(0x4024, 0x08);
 
     // 2. Write data to the circular buffer
@@ -148,10 +146,10 @@ void w5500_send_udp_packet(uint8_t *data, size_t len) {
     w5500_write_reg16(0x4024, 0x0C, ptr); 
 
     // 4. Issue SEND command
-    w5500_write_reg(W5500_S0_CR, 0x0C, 0x20); // SEND
+    w5500_write_reg(W5500_S0_CR, 0x0C, 0x20); 
 
-    // 5. Clear Interrupts (Optional but good practice)
-    w5500_write_reg(0x4002, 0x0C, 0x10); // Clear SEND_OK bit
+    // 5. Clear Interrupts
+    w5500_write_reg(0x4002, 0x0C, 0x10); 
 }
 
 static void w5500_dump_network_regs(void)
@@ -168,7 +166,7 @@ static void w5500_dump_network_regs(void)
 static void w5500_check_socket(void)
 {
     uint8_t status = w5500_read_reg(W5500_S0_SR, 0x08);
-    if (status == 0x22) // 0x22 is UDP OPEN
+    if (status == 0x22) 
         ESP_LOGI(TAG, "Socket0 Status: UDP OPEN (0x22)");
     else
         ESP_LOGW(TAG, "Socket0 Status unexpected: 0x%02X", status);
@@ -191,7 +189,7 @@ static void init_w5500_spi(void)
     ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
     spi_device_interface_config_t devcfg = {
-        .clock_speed_hz = 16 * 1000 * 1000,  // 16 MHz (W5500 handles up to 33MHz usually)
+        .clock_speed_hz = 16 * 1000 * 1000, 
         .mode = 0,
         .spics_io_num = W5500_CS,
         .queue_size = 4
@@ -216,7 +214,8 @@ static void init_i2s(void)
         .mode = I2S_MODE_MASTER | I2S_MODE_RX,
         .sample_rate = SAMPLE_RATE,
         .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
-        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        // CHANGED: Use Right and Left channels (Stereo)
+        .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
         .communication_format = I2S_COMM_FORMAT_STAND_I2S,
         .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
         .dma_buf_count = 4,
@@ -235,7 +234,7 @@ static void init_i2s(void)
     ESP_ERROR_CHECK(i2s_set_pin(I2S_NUM_0, &pin_cfg));
     i2s_zero_dma_buffer(I2S_NUM_0);
 
-    ESP_LOGI(TAG, "I2S initialized");
+    ESP_LOGI(TAG, "I2S initialized (Stereo)");
 }
 
 // ------------------------------------------------------
@@ -243,14 +242,14 @@ static void init_i2s(void)
 // ------------------------------------------------------
 
 // TARGET: YOUR LAPTOP IP
-uint8_t dest_ip[4] = {192, 168, 1, 23}; 
+uint8_t dest_ip[4] = {192, 168, 1, 138}; 
 uint16_t dest_port = 5000;
 
 void mic_task(void *arg)
 {
-    ESP_LOGI(TAG, "Mic task running");
+    ESP_LOGI(TAG, "Mic task running - STEREO MODE");
 
-    // Configure Destination IP & Port for Socket 0
+    // Configure W5500
     for(int i=0; i<4; i++) w5500_write_reg(0x400C + i, 0x0C, dest_ip[i]);
     w5500_write_reg(0x4010, 0x0C, dest_port >> 8);
     w5500_write_reg(0x4011, 0x0C, dest_port & 0xFF);
@@ -263,6 +262,7 @@ void mic_task(void *arg)
         }
 
         size_t bytes_read = 0;
+        // Read larger chunk to stabilize network
         esp_err_t ret = i2s_read(I2S_NUM_0, mic_buffer, sizeof(mic_buffer), &bytes_read, portMAX_DELAY);
 
         if (ret == ESP_OK && bytes_read > 0)
@@ -273,14 +273,21 @@ void mic_task(void *arg)
             for (int i = 0; i < samples; i++)
             {
                 int32_t raw = mic_buffer[i];
-                // INMP441 24-bit MSB aligned -> 16-bit PCM
-                pcm_output[i] = (int16_t)(raw >> 14); 
+
+                // --- VOLUME BOOST WITH LIMITER ---
+                // 1. Shift by 14 (Multiplies volume by 4 compared to >> 16)
+                int32_t amplified = raw >> 12; 
+
+                // 2. Clamp/Limit (Prevents wrapping/distortion)
+                if (amplified > 32767) amplified = 32767;
+                if (amplified < -32768) amplified = -32768;
+
+                pcm_output[i] = (int16_t)amplified;
             }
 
-            // Stream Audio via UDP
+            // Send via UDP
             w5500_send_udp_packet((uint8_t*)pcm_output, samples * sizeof(int16_t));
         }
-        // No delay: Stream as fast as I2S provides data
     }
 }
 
