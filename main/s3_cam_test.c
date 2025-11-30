@@ -130,15 +130,54 @@ static void w5500_udp_open(void)
     w5500_write_reg(W5500_S0_CR, 0x0C, 0x01); // Sn_CR = OPEN
 }
 
-// Send raw UDP data packet (Socket 0)
+// Helper to write a BLOCK of data to W5500 (Efficient!)
+void w5500_write_block(uint16_t addr, uint8_t control, uint8_t *data, size_t len)
+{
+    // We need to send 3 bytes (Addr/Ctrl) + Data Length
+    // We can't just allocate a huge array on stack, so we do it in chunks or use a smart transaction
+    // Better approach for ESP-IDF: Create a transaction with `tx_buffer` pointing to the data
+    // BUT, W5500 needs Addr/Ctrl FIRST. 
+    
+    // Strategy: Send Addr/Ctrl, then keep CS low and send Data.
+    // ESP-IDF 'spi_device_transmit' handles CS automatically. 
+    // We will create a temporary buffer for the Whole Frame (Header + Data)
+    
+    // Max packet is ~512 bytes, so this is safe on stack or heap.
+    uint8_t *tx_buf = heap_caps_malloc(3 + len, MALLOC_CAP_DMA);
+    if (!tx_buf) return; // Error handling
+
+    tx_buf[0] = (addr >> 8) & 0xFF;
+    tx_buf[1] = addr & 0xFF;
+    tx_buf[2] = control;
+    memcpy(&tx_buf[3], data, len);
+
+    spi_transaction_t t = {
+        .length = 8 * (3 + len),
+        .tx_buffer = tx_buf
+    };
+    
+    spi_device_transmit(w5500, &t);
+    free(tx_buf);
+}
+
+// Optimized UDP Send Function
 void w5500_send_udp_packet(uint8_t *data, size_t len) {
     // 1. Get current Write Pointer
     uint16_t ptr = w5500_read_reg16(0x4024, 0x08);
+    
+    // 2. Write data to Circular Buffer (Handling Wrap-around)
+    uint16_t offset = ptr & 0x07FF; // Mask for 2KB buffer
+    uint16_t free_space_at_end = 2048 - offset;
 
-    // 2. Write data to the circular buffer
-    for (size_t i = 0; i < len; i++) {
-        uint16_t addr = (ptr + i) & 0x07FF; // Mask for 2KB buffer
-        w5500_write_reg(addr, 0x14, data[i]); 
+    if (len <= free_space_at_end) {
+        // Easy case: No wrap-around, just write it all
+        w5500_write_block(offset, 0x14, data, len);
+    } else {
+        // Hard case: Wrap-around needed
+        // Write first part (to end of buffer)
+        w5500_write_block(offset, 0x14, data, free_space_at_end);
+        // Write second part (from start of buffer)
+        w5500_write_block(0x0000, 0x14, data + free_space_at_end, len - free_space_at_end);
     }
 
     // 3. Update Write Pointer
@@ -233,7 +272,8 @@ static void init_i2s(void)
     ESP_ERROR_CHECK(i2s_driver_install(I2S_NUM_0, &i2s_cfg, 0, NULL));
     ESP_ERROR_CHECK(i2s_set_pin(I2S_NUM_0, &pin_cfg));
     i2s_zero_dma_buffer(I2S_NUM_0);
-
+    gpio_set_drive_capability(I2S_BCLK_PIN, GPIO_DRIVE_CAP_0);
+    gpio_set_drive_capability(I2S_WS_PIN, GPIO_DRIVE_CAP_0);
     ESP_LOGI(TAG, "I2S initialized (Stereo)");
 }
 
@@ -245,52 +285,81 @@ static void init_i2s(void)
 uint8_t dest_ip[4] = {192, 168, 1, 138}; 
 uint16_t dest_port = 5000;
 
+// --- RTP Protocol Definitions ---
+// __attribute__((packed)) prevents the compiler from adding gaps/padding
+typedef struct __attribute__((packed)) {
+    uint8_t version;      
+    uint8_t payloadType;  
+    uint16_t sequence;    
+    uint32_t timestamp;   
+    uint32_t ssrc;        
+} rtp_header_t;
+
+// Helper to swap Endianness
+uint16_t htons(uint16_t v) { return (v << 8) | (v >> 8); }
+uint32_t htonl(uint32_t v) {
+    return ((v & 0xFF) << 24) | ((v & 0xFF00) << 8) | 
+           ((v & 0xFF0000) >> 8) | ((v >> 24) & 0xFF);
+}
+
 void mic_task(void *arg)
 {
-    ESP_LOGI(TAG, "Mic task running - STEREO MODE");
+    ESP_LOGI(TAG, "Mic task running - RTP MODE");
 
     // Configure W5500
     for(int i=0; i<4; i++) w5500_write_reg(0x400C + i, 0x0C, dest_ip[i]);
     w5500_write_reg(0x4010, 0x0C, dest_port >> 8);
     w5500_write_reg(0x4011, 0x0C, dest_port & 0xFF);
 
+    uint16_t seq_num = 0;
+    uint32_t timestamp = 0;
+    uint32_t ssrc_id = 0x12345678; 
+
     while (1)
     {
-        if (!mic_enabled) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-            continue;
-        }
+        if (!mic_enabled) { vTaskDelay(pdMS_TO_TICKS(100)); continue; }
 
         size_t bytes_read = 0;
-        // Read larger chunk to stabilize network
         esp_err_t ret = i2s_read(I2S_NUM_0, mic_buffer, sizeof(mic_buffer), &bytes_read, portMAX_DELAY);
 
         if (ret == ESP_OK && bytes_read > 0)
         {
             int samples = bytes_read / sizeof(int32_t);
-            int16_t pcm_output[samples]; 
+            
+            // ⚠️ CRITICAL: Payload size = 12 byte Header + Audio Data
+            size_t payload_size = sizeof(rtp_header_t) + (samples * sizeof(int16_t));
+            uint8_t udp_packet[payload_size];
 
+            // 1. Fill RTP Header (12 Bytes)
+            rtp_header_t *rtp = (rtp_header_t *)udp_packet;
+            rtp->version = 0x80;
+            rtp->payloadType = 96;
+            rtp->sequence = htons(seq_num++);
+            rtp->timestamp = htonl(timestamp);
+            rtp->ssrc = htonl(ssrc_id);
+            timestamp += samples;
+
+            // 2. Fill Audio Data (Correctly Aligned)
+            int16_t *pcm_ptr = (int16_t *)(udp_packet + sizeof(rtp_header_t));
+            
             for (int i = 0; i < samples; i++)
             {
                 int32_t raw = mic_buffer[i];
-
-                // --- VOLUME BOOST WITH LIMITER ---
-                // 1. Shift by 14 (Multiplies volume by 4 compared to >> 16)
-                int32_t amplified = raw >> 12; 
-
-                // 2. Clamp/Limit (Prevents wrapping/distortion)
+                // Use >> 14 for safe gain (>> 12 was clipping in your CSV)
+                int32_t amplified = raw >> 14; 
+                
                 if (amplified > 32767) amplified = 32767;
                 if (amplified < -32768) amplified = -32768;
-
-                pcm_output[i] = (int16_t)amplified;
+                
+                pcm_ptr[i] = (int16_t)amplified; 
             }
-
-            // Send via UDP
-            w5500_send_udp_packet((uint8_t*)pcm_output, samples * sizeof(int16_t));
+            // Add this temporary debug line:
+            //ESP_LOGI(TAG, "Payload Size: %d (Expected: %d)", payload_size, 12 + (samples * 2));
+            // 3. Send
+            w5500_send_udp_packet(udp_packet, payload_size);
         }
     }
 }
-
 // ------------------------------------------------------
 // Main App
 // ------------------------------------------------------
