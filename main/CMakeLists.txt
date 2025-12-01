@@ -1,2 +1,2 @@
-idf_component_register(SRCS "s3_cam_test.c"
+idf_component_register(SRCS "main.c" "mic_driver.c" "w5500_driver.c"
                     INCLUDE_DIRS ".")

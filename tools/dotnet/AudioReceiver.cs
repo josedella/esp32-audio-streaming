@@ -195,23 +195,48 @@ namespace AudioReceiver
             lblStatus.Text = "Stopped";
             lblStatus.ForeColor = Color.Black;
 
-            // Save Dialog
+            // Save Dialog for WAV
             using (SaveFileDialog sfd = new SaveFileDialog())
             {
-                sfd.Filter = "CSV File|*.csv";
-                sfd.Title = "Save Audio Data";
-                sfd.FileName = $"audio_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
+                sfd.Filter = "WAV File|*.wav";
+                sfd.Title = "Save Training Data";
+                // Default name helps you organize: Label_Number.wav
+                sfd.FileName = $"recording_{DateTime.Now:HHmmss}.wav";
 
                 if (sfd.ShowDialog() == DialogResult.OK)
                 {
-                    SaveToCsv(sfd.FileName);
+                    SaveToWav(sfd.FileName);
                 }
-                else
+            }
+        }
+
+        private void SaveToWav(string filename)
+        {
+            try 
+            {
+                // Use the format defined in your setup (16kHz, 16-bit, Stereo)
+                var format = new WaveFormat(SAMPLE_RATE, 16, CHANNELS);
+
+                using (var writer = new WaveFileWriter(filename, format))
                 {
-                    // If cancelled, maybe ask if they want to discard? 
-                    // For now, we just keep data in memory until next record start clears it.
-                    MessageBox.Show("Save cancelled. Data kept in memory until next Record start.");
+                    lock(recordedData)
+                    {
+                        // Convert List<short> back to byte[]
+                        byte[] buffer = new byte[recordedData.Count * 2];
+                        for (int i = 0; i < recordedData.Count; i++)
+                        {
+                            byte[] bytes = BitConverter.GetBytes(recordedData[i]);
+                            buffer[i * 2] = bytes[0];
+                            buffer[i * 2 + 1] = bytes[1];
+                        }
+                        writer.Write(buffer, 0, buffer.Length);
+                    }
                 }
+                MessageBox.Show($"Saved {recordedData.Count / CHANNELS} samples to:\n{filename}");
+            }
+            catch(Exception ex)
+            {
+                MessageBox.Show($"Error saving file: {ex.Message}");
             }
         }
 
