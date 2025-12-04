@@ -18,5 +18,6 @@ typedef struct __attribute__((packed)) {
 void eth_init(void);
 void eth_send_rtp_packet(int16_t *pcm_data, size_t sample_count);
 bool eth_check_link(void);
+void eth_verify_config(void);
 
 #endif

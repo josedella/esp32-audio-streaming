@@ -107,7 +107,7 @@ void eth_init(void) {
     w5500_write_reg(0x4001, 0x0C, 0x01); // OPEN
 
     // Set Destination IP/Port (Your Laptop)
-    // IP: 192.168.1.138, Port: 5000
+    // IP: 192.168.1.23, Port: 5000
     uint8_t dest_ip[4] = {192, 168, 1, 138};
     for(int i=0; i<4; i++) w5500_write_reg(0x400C + i, 0x0C, dest_ip[i]);
     w5500_write_reg(0x4010, 0x0C, 5000 >> 8);
@@ -162,6 +162,32 @@ void eth_send_rtp_packet(int16_t *pcm_data, size_t sample_count) {
     }
 }
 
+// --- NEW: Add this helper to read back configuration ---
+void eth_verify_config(void) {
+    uint8_t ip[4];
+    // Read Source IP Register (SIPR) at 0x000F, Block 0x00
+    for(int i=0; i<4; i++) {
+        ip[i] = w5500_read_reg(0x000F + i, 0x00);
+    }
+    
+    ESP_LOGI(TAG, "W5500 Configured IP: %d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+
+    if (ip[0] == 0 && ip[1] == 0) {
+        ESP_LOGE(TAG, "CRITICAL: W5500 IP is 0.0.0.0! SPI Communication Failed.");
+    } else {
+        ESP_LOGI(TAG, "SPI Communication OK.");
+    }
+}
+
+// --- IMPLEMENTATION of eth_check_link ---
 bool eth_check_link(void) {
-    return true; // Todo: Read PHY register
+    // PHY Configuration Register (PHYCFGR) is at address 0x002E in Common Block (0x00)
+    // Bit 0 represents the Link Status (1 = Link Up, 0 = Link Down)
+    uint8_t phy_status = w5500_read_reg(0x002E, 0x00);
+    
+    // Check Bit 0
+    if (phy_status & 0x01) {
+        return true; // Link Up
+    }
+    return false; // Link Down
 }
