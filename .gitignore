@@ -1,6 +1,9 @@
 # ESP-IDF Build folder (Huge, do not commit)
 build/
 
+#ignore Edge Impulse C++ library
+components/
+
 # Editor settings (Optional, but recommended to ignore)
 .vscode/
 .idea/
