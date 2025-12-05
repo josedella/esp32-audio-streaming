@@ -104,8 +104,6 @@ A Windows Forms application acts as the base station.
 git clone [https://github.com/josedella/esp32-audio-streaming.git](https://github.com/josedella/esp32-audio-streaming.git)
 cd esp32-audio-streaming
 
-# Initialize Edge Impulse SDK (if using submodule)
-git submodule update --init --recursive
 
 # Build and Flash
 idf.py set-target esp32s3
