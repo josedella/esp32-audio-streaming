@@ -28,5 +28,4 @@
 // --- NETWORK SETTINGS ---
 #define UDP_PORT        5000
 // IP Config is handled in w5500_driver, but could be defined here
-
 #endif
